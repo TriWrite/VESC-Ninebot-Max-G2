@@ -30,7 +30,8 @@ The controller I am using is the [Spintend ubox Aluminum 85V/150A](https://spint
   * +5V to brake light positive, brake light negative to FET drain, 3.3V PWM to FET gate, FET source to ground.
 * The Comm port is used to communicate with the Nano ESP32 using I2C.
   * SCL to SCL, SDA to SDA, Gnd to Gnd.
-* Hall port is self-explanatory. Can maintain same order of hall wires from stick cable, i.e., match up A B C with 1 2 3. Temp is white wire. Red is red, black is black, Bob's your uncle.
+* Hall port is self-explanatory. Can maintain same order of hall wires from stock cable, i.e., match up A B C with 1 2 3. Temp is white wire. Red is red, black is black, Bob's your uncle.
+* Motor phase wires re-terminated with 4mm male bullet connectors to match board outputs. Same order as stock controller: blue, brown, yellow. 
 
 This controller provides 12V outputs, which is useful because several components of the Max G2 (dash, horn) get 12VDC from the stock controller. If your board doesn't provide 12V, then you'll want a boost converter.
 
@@ -54,9 +55,11 @@ GPIO config:
 * A1 - Button sense (dash green with pull-up resistor to 3.3v, capacitor bridged to ground)
 * D7 - Horn transistor bias out 3.3V (gate of 2N7000 N-channel MOSFET)
 
-## Software & protocol notes
+## Software & serial protocol notes
 * C++ Arduino sketch to drive Arduino Nano ESP32 (Ninebot Max G2 ESP32.ino) communication with dash and VESC
 * lispBM script to drive VESC communication with dash
+  * Supports thermal management: reduce current above threshold temperature to prevent overheat
+  * Supports launch boost: if not in thermal management, then allow boost current at low speed to assist acceleration from standstill
 * G2 BLE to ESC serial protocol is very similar to that for the G30 etc., but the number of data bytes in a packet differs. For example, the ESC response to BLE for command 0x64 has 8 bytes in the payload for the G2 as opposed to 6 bytes for the G30.
 * The 11th overall byte in the packet from BLE to ESC is used to transmit:
   * horn on (0x60)
