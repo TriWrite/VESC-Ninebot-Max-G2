@@ -1,8 +1,8 @@
 # VESC Ninebot Max G2
 ## Background
-Code and information to support (eventually) full-featured Ninebot Max G2 operation using a VESC-based controller and an Arduino Nano ESP32. UART protocol for dash reverse-engineered using USB-serial sniffer and serial port monitor software, scooterhacking.org documentation on Ninebot serial protocol, and predecessor example code for Max G30 from [tonymillion](https://github.com/tonymillion/VescNinebotDash) and [the VESC team](https://github.com/m365fw/vesc_m365_dash).
+Code and information to support (eventually) full-featured Ninebot Max G2 operation using a VESC-based controller and an Arduino Nano ESP32. UART protocol for dash "reverse-engineered" using USB-serial sniffer and serial port monitor software, scooterhacking.org documentation on Ninebot serial protocol, and predecessor example code for Max G30 from [tonymillion](https://github.com/tonymillion/VescNinebotDash) and [the VESC team](https://github.com/m365fw/vesc_m365_dash).
 
-I found that the VESC board I was using did not have enough processing headroom to support UART communication with the dash, a button input scanning loop, etc. all at the same time on one core whiel also driving the motor effectively/safely. The dash seems somewhat sensitive about timing of responses to its commands.
+I found that the VESC board I was using did not have enough processing headroom to support UART communication with the dash, a button input scanning loop, etc. all at the same time on one core while also driving the motor effectively/safely. The dash seems somewhat sensitive about timing of responses to its commands.
 
 Adding in an ESP32-S3 based Arduino Nano ESP32 to act as a "communication hub" solved that problem.
 
