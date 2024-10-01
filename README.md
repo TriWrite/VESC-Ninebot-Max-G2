@@ -46,7 +46,9 @@ I'm using the Arduino Nano ESP32 as a communication nexus of sorts between the B
    * Once UART comms starts running on the dash, the button line (green wire) gets super noisy, even with a pull-up resistor to bring it to logic level 3.3V. I found that it to be impractical with my current knowledge of electronics to clean up the signal to the point where I could get a consistent digital HIGH/LOW on the button output. Button has an internal 10kOhm resistor to ground when pressed. 
    * I tried buffering a decent amount with a 22kOhm pull-up resistor attached to +3.3V, then a 470nF ceramic capacitor to bridge the button line and ground. This was enough to allow analogRead() to reliably detect button down, since the voltage on button down was below the low range of the voltage swings that occur when the button is up. Not ideal, but it works fine.
 
+### Prototype wiring example
 ![image](wiring-prototype.jpg)
+
 GPIO config:
 * D3 - UART Tx (reverse Schottky diode connected to dash yellow)
 * D4 - UART Rx (dash yellow)
