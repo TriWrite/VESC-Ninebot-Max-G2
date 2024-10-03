@@ -167,11 +167,12 @@ void buttonLoop(void* pvParam) {
     }
     taskENTER_CRITICAL(&spinlock);
     if (outcome == 1) { //single press
-      if (!isLocked) {
+      if (!isLocked && !isOff) {
         isLightOn = !isLightOn;
       }
       if (isOff) {
         isOff = false;
+        isLocked = true;
       }
     } else if (outcome == 2 && !(isLocked || isOff)) { //double press
       if (speedMode == 4) {
@@ -217,7 +218,7 @@ int buttonPressed(TickType_t taskDelay, int msDelay) {
   const int DEBOUNCE_MS = 27;
   const int LOCKOUT_TIME = 35;
   const int DBL_PRESS_MS = 200;
-  const int LONG_PRESS_MS = 2000;
+  const int LONG_PRESS_MS = 1750;
   const int ACTIVE_POLLING_FACTOR = msDelay / POLLING_RATE; //polling after button press is detected will be faster than main loop by this factor
 
   const int ACTIVE_POLLING_MS_DELAY = msDelay / ACTIVE_POLLING_FACTOR;
