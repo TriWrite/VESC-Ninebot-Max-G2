@@ -6,24 +6,31 @@
 
 //dev defines
 #define I2C_DEV_ADDR 0x45 //ESP32 acts as I2C peripheral/slave. VESC controller/master polls for updates using lispBM script.
+#define I2C_RX_ARRAY_LENGTH 8
+#define I2C_TX_ARRAY_LENGTH 8
 #define CORE_0 0
 #define CORE_1 1
-#define UART_STACK_SIZE 147456
-#define BUTTON_STACK_SIZE 16384
+#define UART_STACK_SIZE 172032
+#define UART_TX_ARRAY_LENGTH 17
+#define UART_RX_ARRAY_LENGTH 18
+#define UART_PACKET_HEADER_LENGTH 3
+#define BUTTON_STACK_SIZE 24576
 #define I2C_STACK_SIZE 4096
 #define BUTTON_PIN A1 //Max G2 button is super noisy... need to use a big ol capacitor and ADC input to reliably detect button down
 #define HORN_PIN D7
+//don't want to end up continually sending an old input if UART connection fails; throttle stuck open will lead to a very bad day
+#define INPUT_MAX_AGE_TO_FORWARD 75000 //microseconds
 
 using namespace std;
 
 static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
 
-uint8_t rxArrayI2C[8];
-uint8_t rxArrayUART[16];
-uint8_t txArrayI2C[8];
-uint8_t txArrayUART[17];
-uint8_t packetHeader[3];
-uint8_t junkArray[17];
+uint8_t rxArrayI2C[I2C_RX_ARRAY_LENGTH];
+uint8_t rxArrayUART[UART_RX_ARRAY_LENGTH];
+uint8_t txArrayI2C[I2C_TX_ARRAY_LENGTH];
+uint8_t txArrayUART[UART_TX_ARRAY_LENGTH];
+uint8_t packetHeader[UART_PACKET_HEADER_LENGTH];
+uint8_t junkArray[UART_TX_ARRAY_LENGTH];
 volatile bool needToTransmitCruiseToVESC = false;
 volatile uint8_t currentSpeed;
 volatile uint8_t batteryStateOfCharge;
@@ -42,6 +49,7 @@ volatile bool isOff = true;
 volatile bool isLocked = true;
 volatile bool isOverheated = false;
 volatile bool hornState; //0 is off/LOW, 1 is off/HIGH
+volatile uint64_t timeLastInputReceived;
 
 TaskHandle_t handleUART;
 TaskHandle_t handleButton;
@@ -131,18 +139,28 @@ void IRAM_ATTR onReceive(int len) {
 }
 
 void IRAM_ATTR onRequest() {
+  uint64_t ageOfInput = ((uint64_t)esp_timer_get_time() - timeLastInputReceived);
+  
   //access globals to populate outgoing array for VESC
   taskENTER_CRITICAL_ISR(&spinlock);
   if ((aux == 0x50) && (needToTransmitCruiseToVESC == false)) {
     aux = 0x40;
   }
-  txArrayI2C[0] = throttle;
-  txArrayI2C[1] = brake;
-  txArrayI2C[2] = aux;
+  //fail safe on UART connection loss. Only send inputs less than 50ms old
+  if (ageOfInput < INPUT_MAX_AGE_TO_FORWARD) {
+    txArrayI2C[0] = throttle;
+    txArrayI2C[1] = brake;
+    txArrayI2C[2] = aux;
+  } else { //otherwise zero out brake and throttle inputs
+    txArrayI2C[0] = 0x00;
+    txArrayI2C[1] = 0x00;
+    txArrayI2C[2] = 0x40;
+  }
   txArrayI2C[3] = speedMode;
   txArrayI2C[4] = (isOff || isLocked);
   txArrayI2C[5] = 0;
   taskEXIT_CRITICAL_ISR(&spinlock);
+
   //checksum and send it
   calculateChecksum(txArrayI2C, 6);
   Wire.write(txArrayI2C, 8);
@@ -152,14 +170,12 @@ void buttonLoop(void* pvParam) {
   const int MS_DELAY = 45;
   const TickType_t TASK_DELAY = MS_DELAY / portTICK_PERIOD_MS;
   int outcome; //press type: 0-rejected, 1-single, 2-double, 3-long
-  //esp_timer_get_time();
 
   pinMode(BUTTON_PIN, INPUT);
 
   vTaskDelay(1000 / portTICK_PERIOD_MS);
 
   for (;;) {
-    esp_task_wdt_reset();
     vTaskDelay(TASK_DELAY);
     outcome = buttonPressed(TASK_DELAY, MS_DELAY);
     if (outcome == 0) {
@@ -277,9 +293,9 @@ int buttonPressed(TickType_t taskDelay, int msDelay) {
     //lift vs. long press
     } else if (state == 2) {
       if (buttonIsPressed) {  //button lifted after debounce
-        taskENTER_CRITICAL(&spinlock);
         //double beep on unlock
         if (!longPressBeepSent && !needToTransmitBeepToDash && iterations > LONG_PRESS_TIMEOUT) {
+          taskENTER_CRITICAL(&spinlock);
           if (isLocked && !isOff) {
             beep = 3;  
           } else if (!isLocked && !isOff) {
@@ -287,8 +303,8 @@ int buttonPressed(TickType_t taskDelay, int msDelay) {
           }
           needToTransmitBeepToDash = true;
           longPressBeepSent = true;
+          taskEXIT_CRITICAL(&spinlock);
         }
-        taskEXIT_CRITICAL(&spinlock);
       } else { 
         if (iterations > LONG_PRESS_TIMEOUT) {
           return 3;
@@ -306,18 +322,16 @@ int buttonPressed(TickType_t taskDelay, int msDelay) {
     //otherwise keep iterating
     vTaskDelay(ACTIVE_POLLING_TASK_DELAY);
     ++iterations;
-    esp_task_wdt_reset();
   }
 }
 
 void uartLoop(void* pvParam) {
-  const TickType_t uartTaskDelay = 10 / portTICK_PERIOD_MS;
+  const TickType_t uartTaskDelay = 8 / portTICK_PERIOD_MS;
   
   for (;;) {
     if (Serial1.available()) {
       communicateWithDashboard();
     }
-    esp_task_wdt_reset();
     vTaskDelay(uartTaskDelay);
   }
 
@@ -349,6 +363,7 @@ void communicateWithDashboard() {
         if (!needToTransmitCruiseToVESC) {
           aux = rxArrayUART[8];
         }
+        timeLastInputReceived = esp_timer_get_time();
         if (!isLocked && !isOff) {
           if (aux == 0x50) {
             needToTransmitCruiseToVESC = true;
@@ -404,13 +419,14 @@ void communicateWithDashboard() {
     while (!Serial1.available()) {}
     Serial1.readBytes(junkArray, 17);
 
-    taskENTER_CRITICAL(&spinlock);
     if (beep > 0) {
+      taskENTER_CRITICAL(&spinlock);
       beep = 0;
       needToTransmitBeepToDash = 0;
+      taskEXIT_CRITICAL(&spinlock);
     }
-    taskEXIT_CRITICAL(&spinlock);
   }
+  esp_task_wdt_reset();
 }
 
 uint8_t updateSpeedMode() {
