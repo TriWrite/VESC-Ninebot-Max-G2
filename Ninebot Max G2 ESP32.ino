@@ -3,25 +3,30 @@
 
 //user defines
 #define USE_MPH true
+#define TEMP_OVERHEAT_MOTOR 165
+#define TEMP_OVERHEAT_FET 80
 
 //dev defines
+#define CORE_0 0
+#define CORE_1 1
+#define I2C_STACK_SIZE 4096
 #define I2C_DEV_ADDR 0x45 //ESP32 acts as I2C peripheral/slave. VESC controller/master polls for updates using lispBM script.
 #define I2C_RX_ARRAY_LENGTH 8
 #define I2C_TX_ARRAY_LENGTH 8
-#define CORE_0 0
-#define CORE_1 1
 #define UART_STACK_SIZE 172032
 #define UART_TX_ARRAY_LENGTH 17
 #define UART_RX_ARRAY_LENGTH 18
 #define UART_PACKET_HEADER_LENGTH 3
 #define BUTTON_STACK_SIZE 24576
-#define I2C_STACK_SIZE 4096
 #define BUTTON_PIN A1 //Max G2 button is super noisy... need to use a big ol capacitor and ADC input to reliably detect button down
 #define HORN_PIN D7
 //don't want to end up continually sending an old input if UART connection fails; throttle stuck open will lead to a very bad day
-#define INPUT_MAX_AGE_TO_FORWARD 75000 //microseconds
+#define INPUT_MAX_AGE_TO_FORWARD 83333 //microseconds
 
 using namespace std;
+
+const int TEMP_COOLDOWN_MOTOR = (TEMP_OVERHEAT_MOTOR - 5);
+const int TEMP_COOLDOWN_FET = (TEMP_OVERHEAT_FET - 2);
 
 static portMUX_TYPE spinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -104,6 +109,7 @@ void setupI2C(void* pvParam) {
 void IRAM_ATTR onReceive(int len) {
   uint8_t bytesReceived = 0;
   uint16_t checksum;
+  float tempSpeed;
 
   while (Wire.available()) {
     rxArrayI2C[bytesReceived] = Wire.read();
@@ -112,21 +118,21 @@ void IRAM_ATTR onReceive(int len) {
   if (bytesReceived == 8) {
     checksum = ninebotChecksumToUint16(rxArrayI2C[6], rxArrayI2C[7]);
     if (verifyChecksum(checksum, rxArrayI2C, 6)) {
-      taskENTER_CRITICAL_ISR(&spinlock);
-      currentSpeed = ((float)rxArrayI2C[0] / 10); //speed transmitted in units of (m/s * 10) to preserve precision within 8 bits
+      tempSpeed = ((float)rxArrayI2C[0] / 10); //speed transmitted in units of (m/s * 10) to preserve precision within 8 bits
       if (USE_MPH) {
-        currentSpeed *= 2.236936; //conversion factor for mph
+        tempSpeed *= 2.236936; //conversion factor for mph
       } else {
-        currentSpeed *= 3.6; //else convert to km/h
+        tempSpeed *= 3.6; //else convert to km/h
       }
-      currentSpeed = (uint8_t)round(currentSpeed);
+      taskENTER_CRITICAL_ISR(&spinlock);
+      currentSpeed = (uint8_t)round(tempSpeed);
       batteryStateOfCharge = rxArrayI2C[1]; //0-100 range from VESC BMS or voltage estimation, based on 'has-vesc-bms in lispBM script
       tempMotor = (int)rxArrayI2C[2] - 50; //temps sent offset by 50 degC to allow range between -50 and 205 degC within 8 bits
       tempFET = (int)rxArrayI2C[3] - 50;
-      if (isOverheated && ((tempMotor <= 165) || (tempFET <= 80))) {
-        isOverheated = !isOverheated;
-      } else if (!isOverheated && ((tempMotor > 165) || (tempFET > 80))) {
-        isOverheated = !isOverheated;
+      if (isOverheated && ((tempMotor <= TEMP_COOLDOWN_MOTOR) || (tempFET <= TEMP_COOLDOWN_FET))) {
+        isOverheated = false;
+      } else if (!isOverheated && ((tempMotor > TEMP_OVERHEAT_MOTOR) || (tempFET > TEMP_OVERHEAT_FET))) {
+        isOverheated = true;
       }
       isCharging = (bool)(rxArrayI2C[4] & 1);
       isCruiseOn = (bool)((rxArrayI2C[4] & 2) >> 1);
@@ -139,19 +145,20 @@ void IRAM_ATTR onReceive(int len) {
 }
 
 void IRAM_ATTR onRequest() {
-  uint64_t ageOfInput = ((uint64_t)esp_timer_get_time() - timeLastInputReceived);
+  volatile int64_t ageOfInput;
   
   //access globals to populate outgoing array for VESC
   taskENTER_CRITICAL_ISR(&spinlock);
   if ((aux == 0x50) && (needToTransmitCruiseToVESC == false)) {
     aux = 0x40;
   }
-  //fail safe on UART connection loss. Only send inputs less than 50ms old
+  //fail safe on UART connection loss. Do not forward stale inputs to VESC. Stuck throttle will be a VERY bad day.
+  ageOfInput = (esp_timer_get_time() - timeLastInputReceived);
   if (ageOfInput < INPUT_MAX_AGE_TO_FORWARD) {
     txArrayI2C[0] = throttle;
     txArrayI2C[1] = brake;
     txArrayI2C[2] = aux;
-  } else { //otherwise zero out brake and throttle inputs
+  } else { //zero out brake and throttle inputs if we don't have fresh ones
     txArrayI2C[0] = 0x00;
     txArrayI2C[1] = 0x00;
     txArrayI2C[2] = 0x40;
@@ -302,8 +309,8 @@ int buttonPressed(TickType_t taskDelay, int msDelay) {
             beep = 2;
           }
           needToTransmitBeepToDash = true;
-          longPressBeepSent = true;
           taskEXIT_CRITICAL(&spinlock);
+          longPressBeepSent = true;
         }
       } else { 
         if (iterations > LONG_PRESS_TIMEOUT) {
