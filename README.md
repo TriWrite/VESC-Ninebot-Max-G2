@@ -69,4 +69,4 @@ GPIO config:
     * sent in exactly one packet! can be in 0x64 packets as well as 0x65, so you need to capture and handle all incoming input data to catch this reliably
   * baseline (0x40)
 * In packet from ESC to BLE, lamp status byte encodes headlamp (bit 1), park (bit 2) and cruise (bit 3).
-  * The fourth to last bit (second to last before the two checksum bytes) is 0x04 instead of 0x06 when in cruise, but I don't really know what this byte does apart from that.
+  * On top of this, the overall fourth to last byte (second to last byte before the two checksum bytes) is 0x04 instead of 0x06 when in cruise, but I don't really know what this byte does apart from that.
