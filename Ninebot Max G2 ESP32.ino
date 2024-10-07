@@ -13,11 +13,12 @@
 #define I2C_DEV_ADDR 0x45 //ESP32 acts as I2C peripheral/slave. VESC controller/master polls for updates using lispBM script.
 #define I2C_RX_ARRAY_LENGTH 8
 #define I2C_TX_ARRAY_LENGTH 8
-#define UART_STACK_SIZE 172032
+#define UART_STACK_SIZE 147456
 #define UART_TX_ARRAY_LENGTH 17
 #define UART_RX_ARRAY_LENGTH 18
 #define UART_PACKET_HEADER_LENGTH 3
-#define BUTTON_STACK_SIZE 24576
+#define WATCHDOG_STACK_SIZE 2048
+#define BUTTON_STACK_SIZE 8192
 #define BUTTON_PIN A1 //Max G2 button is super noisy... need to use a big ol capacitor and ADC input to reliably detect button down
 #define HORN_PIN D7
 //don't want to end up continually sending an old input if UART connection fails; throttle stuck open will lead to a very bad day
@@ -55,10 +56,12 @@ volatile bool isLocked = true;
 volatile bool isOverheated = false;
 volatile bool hornState; //0 is off/LOW, 1 is off/HIGH
 volatile uint64_t timeLastInputReceived;
+volatile bool needToRebootUART = false;
 
 TaskHandle_t handleUART;
 TaskHandle_t handleButton;
 TaskHandle_t handleI2C;
+TaskHandle_t handleWatchdog;
 
 void buttonLoop(void*);
 int buttonPressed(TickType_t, int);
@@ -70,6 +73,7 @@ void IRAM_ATTR onReceive(int);
 void IRAM_ATTR onRequest();
 void setupI2C(void*);
 void uartLoop(void*);
+void uartWatchdog(void*);
 uint8_t updateSpeedMode();
 bool verifyChecksum(uint16_t, uint8_t*, int);
 
@@ -78,8 +82,8 @@ void setup() {
   initializeTxArray(txArrayUART);
   
   //UART to computer (Serial) and BLE (Serial1)
-  Serial.begin(115200);
-  Serial.setTimeout(1);
+  //Serial.begin(115200);
+  //Serial.setTimeout(1);
   Serial1.begin(115200, SERIAL_8N1, D4, D3);
 
   //horn pin goes to gate of 2N7000 FET, which then sends 12v to the horn
@@ -90,6 +94,7 @@ void setup() {
   xTaskCreatePinnedToCore(setupI2C, "Begin I2C to VESC", I2C_STACK_SIZE, NULL, 31, &handleI2C, CORE_1);
   xTaskCreatePinnedToCore(buttonLoop, "Button handling", BUTTON_STACK_SIZE, NULL, 1, &handleButton, CORE_0);
   xTaskCreatePinnedToCore(uartLoop, "UART comms", UART_STACK_SIZE, NULL, 16, &handleUART, CORE_0);
+  xTaskCreatePinnedToCore(uartWatchdog, "UART watchdog", WATCHDOG_STACK_SIZE, NULL, 16, &handleWatchdog, CORE_1);
 }
 
 void loop() {
@@ -162,6 +167,7 @@ void IRAM_ATTR onRequest() {
     txArrayI2C[0] = 0x00;
     txArrayI2C[1] = 0x00;
     txArrayI2C[2] = 0x40;
+    needToRebootUART = true;
   }
   txArrayI2C[3] = speedMode;
   txArrayI2C[4] = (isOff || isLocked);
@@ -270,7 +276,6 @@ int buttonPressed(TickType_t taskDelay, int msDelay) {
         state = 1;
         vTaskDelay(ACTIVE_POLLING_TASK_DELAY);
         ++iterations;
-        //Serial.println("Input detected - moving to debounce");
         continue;
       } else {
         if (presses == 0) {
@@ -388,52 +393,48 @@ void communicateWithDashboard() {
           }
         }
         taskEXIT_CRITICAL(&spinlock);
+        //If BLE sends 0x64, then send an update to the dash after parsing out input data
+        if (rxArrayUART[3] == 0x64) {
+          taskENTER_CRITICAL(&spinlock);
+          //update with current values from VESC
+          bitmap = updateSpeedMode();
+          txArrayUART[7] = bitmap;
+          txArrayUART[8] = batteryStateOfCharge;
+          if (isLightOn) {
+            lampStatus = lampStatus | 0x01; //flip lamp bit 1 to 1
+          } else {
+            lampStatus = lampStatus & 0xFE; //flip lamp bit 1 to 0
+          }
+          if (isCruiseOn) {
+            lampStatus = lampStatus | 0x04; //flip lamp bit 3 to 1
+          } else {
+            lampStatus = lampStatus & 0xFB; //flip lamp bit 3 to 0
+          }
+          txArrayUART[9] = lampStatus;
+          txArrayUART[10] = beep;
+          txArrayUART[11] = currentSpeed;
+
+          taskEXIT_CRITICAL(&spinlock);
+
+          //calculate and store checksum
+          calculateChecksum((uint8_t*)txArrayUART + 2, 13);
+
+          //send it
+          Serial1.write(txArrayUART, 17);
+          
+          //clear out data just sent from buffer because fake "half-duplex" shenanigans
+          while (!Serial1.available()) {}
+          Serial1.readBytes(junkArray, 17);
+
+          if (beep > 0) {
+            beep = 0;
+            needToTransmitBeepToDash = 0;
+          }
+        }
+        esp_task_wdt_reset();
       }
     }
   }
-
-  //If BLE sends 0x64, then send an update to the dash after parsing out input data
-  if (rxArrayUART[3] == 0x64) {
-    taskENTER_CRITICAL(&spinlock);
-    
-    //update with current values from VESC
-    bitmap = updateSpeedMode();
-    txArrayUART[7] = bitmap;
-    txArrayUART[8] = batteryStateOfCharge;
-    if (isLightOn) {
-      lampStatus = lampStatus | 0x01; //flip lamp bit 1 to 1
-    } else {
-      lampStatus = lampStatus & 0xFE; //flip lamp bit 1 to 0
-    }
-    if (isCruiseOn) {
-      lampStatus = lampStatus | 0x04; //flip lamp bit 3 to 1
-    } else {
-      lampStatus = lampStatus & 0xFB; //flip lamp bit 3 to 0
-    }
-    txArrayUART[9] = lampStatus;
-    txArrayUART[10] = beep;
-    txArrayUART[11] = currentSpeed;
-
-    taskEXIT_CRITICAL(&spinlock);
-
-    //calculate and store checksum
-    calculateChecksum((uint8_t*)txArrayUART + 2, 13);
-
-    //send it
-    Serial1.write(txArrayUART, 17);
-    
-    //clear out data just sent from buffer because fake "half-duplex" shenanigans
-    while (!Serial1.available()) {}
-    Serial1.readBytes(junkArray, 17);
-
-    if (beep > 0) {
-      taskENTER_CRITICAL(&spinlock);
-      beep = 0;
-      needToTransmitBeepToDash = 0;
-      taskEXIT_CRITICAL(&spinlock);
-    }
-  }
-  esp_task_wdt_reset();
 }
 
 uint8_t updateSpeedMode() {
@@ -445,6 +446,28 @@ uint8_t updateSpeedMode() {
   bitmap += (USE_MPH << 6);
   bitmap += (isOverheated << 7);
   return bitmap;
+}
+
+void uartWatchdog(void* pvParam) {
+  const TickType_t watchdogTaskDelay = (50 / portTICK_PERIOD_MS);
+  
+  Serial.begin();
+  while (!Serial) {
+    ;
+  }
+
+  for (;;) {
+    vTaskDelay(watchdogTaskDelay);
+    if (needToRebootUART) {
+      taskENTER_CRITICAL(&spinlock);
+      vTaskDelete(handleUART);
+      xTaskCreatePinnedToCore(uartLoop, "UART comms", UART_STACK_SIZE, NULL, 16, &handleUART, CORE_0);
+      needToRebootUART = false;
+      taskEXIT_CRITICAL(&spinlock);
+    }
+  }
+
+  vTaskDelete(handleWatchdog);
 }
 
 void initializeTxArray(uint8_t* array) {
@@ -493,5 +516,5 @@ bool verifyChecksum(uint16_t checksum, uint8_t* data, int len) {
 }
 
 uint16_t ninebotChecksumToUint16(uint8_t byteOne, uint8_t byteTwo) {
-  return (byteTwo << 8) | byteOne;
+  return ((byteTwo << 8) | byteOne);
 }
