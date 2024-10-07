@@ -14,9 +14,9 @@
 (def brake-max 167.0)
 
 ;Power limits for motor
-(def max-amps 60.0) ;Maximum phase amps when cold
+(def max-amps 57.5) ;Maximum phase amps when cold & in motion
 (def current-offset 20.0) ;Number of amps to reduce motor phase current by when hot
-(def takeoff-assist-factor 0.15) ;Factor to boost max current by when below 2 m/s
+(def takeoff-assist-factor 0.20) ;Factor to boost max current by when below 2 m/s
 ;want to start phasing in current limit when above lower threshold, ramp up to full offset when above upper threshold
 (def lower-current-limit-motor-temp 155.0)
 (def upper-current-limit-motor-temp 170.0)
@@ -97,7 +97,7 @@
         (var time-when-cruise-enabled)
 
         ;need to make sure that we can more than keep up with dashboard inputs (~50Hz)
-        (yield 6400)
+        (yield 6000)
         (if (= vt-output-disabled 1) (yield 250000))
 
         (if (= (mod tx-since-last-refresh 5) 0)
@@ -155,8 +155,15 @@
                                 (set 'vt-output-disabled output-disabled)
                                 (if (= output-disabled 0)
                                     {
-                                        (handle-inputs throttle-normalized brake-normalized aux)
-                                        (manage-speed-mode speed-mode)
+                                        (if (and (> throttle-raw 0) (> brake-raw 0))
+                                            {
+                                                (handle-inputs throttle-normalized brake-normalized aux)
+                                                (manage-speed-mode speed-mode)
+                                            }
+                                            {
+                                                (yield 10000);
+                                            }
+                                        )
                                     }
                                     {
                                         (if (> brakelight-state 0)
@@ -172,10 +179,10 @@
                     }
                     {
                         (set 'vt-failed-tx-ct (+ vt-failed-tx-ct 1))
-                        (if (> (- (systime) last-tx-time) (if (= vt-output-disabled 1) 5000 500))
+                        (if (> (- (systime) last-tx-time) (if (= vt-output-disabled 1) 5000 625))
                             {
                                 ;fail safe on connection loss
-                                ;thresholds of 500 ms when locked/off and 50 ms when active will count failure after ~2 and ~5 successive failures, respectively
+                                ;thresholds of 500 ms when locked/off and 62.5 ms when active
                                 (set-current-rel 0.0)
                                 (set 'vt-throttle-input 0.0)
                                 (set 'vt-brake-input 0.0)
@@ -193,7 +200,7 @@
 
 (defun handle-inputs(throttle brake aux) ; Frame 0x65
     {
-        (app-disable-output 300)
+        (app-disable-output 125)
         (var brakes-on (> brake 0))
 
         ; Pass through throttle and brake as relative current to VESC
@@ -340,6 +347,6 @@
 (spawn 128 manage-thermals)
 
 ;Start up comms with ESP32 via I2C
-(yield 200000)
 (i2c-start 'rate-200k)
+(yield 200000)
 (i2c-comm)
