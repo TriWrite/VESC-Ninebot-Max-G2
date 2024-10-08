@@ -12,7 +12,7 @@ You will also want a GH1.25 connector kit for making connections to the VESC boa
 
 ## To-do
 * Cruise control
-* Proper speed modes that actually do something instead of being visual only
+* ~~Proper speed modes that actually do something instead of being visual only~~
 
 ## Hardware
 This will theoretically work with all of the stock hardware, but then you might as well use SHFW or Xiaodash. The main benefit of this conversion is to let you use batteries at 60V+, as long as your BMS and VESC support it.
