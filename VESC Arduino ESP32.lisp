@@ -161,7 +161,8 @@
                                                 (manage-speed-mode speed-mode)
                                             }
                                             {
-                                                (yield 10000);
+                                                (yield 1000) ;give ESP32 time to restart UART loop
+                                                (puts "UART lag detected")
                                             }
                                         )
                                     }
