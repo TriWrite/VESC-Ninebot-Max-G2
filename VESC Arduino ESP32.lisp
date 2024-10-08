@@ -23,6 +23,13 @@
 (def current-limit-denominator (- upper-current-limit-motor-temp lower-current-limit-motor-temp))
 (def vt-current-limit max-amps)
 (conf-set 'l-current-max vt-current-limit)
+(def current-scale-sport 1.0)
+(def current-scale-drive 0.7)
+(def current-scale-eco 0.5)
+(def max-speed-eco 15.0)
+(def max-speed-drive 22.0)
+(def max-speed-sport 35.0)
+(def speed-in-kph nil) ;set to t if you want speed limits defined in km/h instead of mph
 
 ;for tuning, set capture-telemetry to 1 to capture performance data on I2C transaction rate
 (def capture-telemetry 0)
@@ -242,10 +249,27 @@
 
 (defun manage-speed-mode(speed-mode)
     {
-        (if (= speed-mode vt-current-speed-mode)
-            {}
+        (if (!= speed-mode vt-current-speed-mode)
             {
                 (set 'vt-current-speed-mode speed-mode)
+                (if (= speed-mode 4)
+                    {
+                        (conf-set 'l-current-max-scale current-scale-sport)
+                        (conf-set 'max-speed (/ max-speed-sport (if speed-in-kph 1.6 2.237)))
+                    }
+                )
+                (if (= speed-mode 2)
+                    {
+                        (conf-set 'l-current-max-scale current-scale-eco)
+                        (conf-set 'max-speed (/ max-speed-eco (if speed-in-kph 1.6 2.237)))
+                    }
+                )
+                (if (= speed-mode 1)
+                    {
+                        (conf-set 'l-current-max-scale current-scale-drive)
+                        (conf-set 'max-speed (/ max-speed-drive (if speed-in-kph 1.6 2.237)))
+                    }
+                )
             }
         )
     }
